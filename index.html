@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Universal Binary Inspector</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--panel:#131b2e;--panel2:#0d1526;--border:#2b3850;--text:#edf3ff;--muted:#9fb0c8;--accent:#69a8ff;--good:#7be0ad;--warn:#ffc76b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:18px 22px;border-bottom:1px solid var(--border)}
+h1{font-size:21px;margin:0}h3{margin-top:0}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+main{padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:16px}.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;min-width:0}.wide{grid-column:1/-1}
+.meta{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:10px}.kv{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:9px}.kv b{display:block;color:var(--muted);font-size:12px;font-weight:500;margin-bottom:3px}.kv span{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{margin:0;white-space:pre-wrap;overflow:auto;max-height:420px;line-height:1.45;font-size:13px}
+button,input,select{font:inherit}button{border:0;border-radius:8px;background:#2d6cdf;color:white;padding:8px 12px;cursor:pointer}button.secondary{background:#37465f}button:disabled{opacity:.5;cursor:not-allowed}
+input[type=file]{max-width:520px}input[type=number],select{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:8px}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.controls>div{min-width:120px;flex:1}label{display:block;color:var(--muted);font-size:12px;margin-bottom:5px}
+table{width:100%;border-collapse:collapse;font-size:13px}.scroll{max-height:420px;overflow:auto}th,td{border-bottom:1px solid var(--border);padding:6px 8px;text-align:right}th:first-child,td:first-child{text-align:left}
+.status{color:#9bc9ff}.good{color:var(--good)}.warn{color:var(--warn)}.small{font-size:12px;color:var(--muted)}
+.badge{display:inline-block;padding:3px 7px;border:1px solid var(--border);border-radius:999px;background:var(--panel2);font-size:12px;margin:2px}
+.card{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin:8px 0}.score{font-weight:700;color:var(--accent)}
+canvas{width:100%;height:250px;background:var(--panel2);border:1px solid var(--border);border-radius:8px}
+@media(max-width:900px){main{grid-template-columns:1fr}.wide{grid-column:auto}.meta{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Universal Binary Inspector</h1>
+  <input id="file" type="file" accept="*/*">
+  <span id="status" class="status">Choose any file</span>
+</header>
+
+<main>
+<section class="panel wide">
+  <h3>Automatic detection</h3>
+  <div id="meta" class="meta"></div>
+  <div id="detected" style="margin-top:12px"></div>
+</section>
+
+<section class="panel">
+  <h3>Detection report</h3>
+  <pre id="report">No file loaded.</pre>
+</section>
+
+<section class="panel">
+  <h3>Hex + ASCII</h3>
+  <div class="controls" style="margin-bottom:10px">
+    <div><label>Byte offset</label><input id="hexOffset" type="number" min="0" value="0"></div>
+    <div><label>Bytes</label><input id="hexLength" type="number" min="16" max="65536" value="2048"></div>
+    <div><button id="hexRead" disabled>Read</button></div>
+  </div>
+  <pre id="hex">No file loaded.</pre>
+</section>
+
+<section class="panel">
+  <h3>Printable strings</h3>
+  <div class="controls" style="margin-bottom:10px">
+    <div><label>Minimum length</label><input id="minString" type="number" min="2" max="100" value="4"></div>
+    <div><button id="stringsBtn" disabled>Extract</button></div>
+  </div>
+  <pre id="strings">No file loaded.</pre>
+</section>
+
+<section class="panel">
+  <h3>Numeric interpreter</h3>
+  <div class="controls">
+    <div><label>Offset</label><input id="numOffset" type="number" value="0" min="0"></div>
+    <div><label>Type</label><select id="dtype">
+      <option value="u8">uint8</option><option value="i8">int8</option>
+      <option value="u16">uint16</option><option value="i16">int16</option>
+      <option value="u32">uint32</option><option value="i32">int32</option>
+      <option value="u64">uint64</option><option value="i64">int64</option>
+      <option value="f32" selected>float32</option><option value="f64">float64</option>
+    </select></div>
+    <div><label>Endian</label><select id="endian"><option value="little">Little</option><option value="big">Big</option></select></div>
+    <div><label>Count</label><input id="numCount" type="number" value="128" min="1" max="10000"></div>
+    <div><button id="decodeBtn" disabled>Decode</button></div>
+  </div>
+  <div class="scroll" style="margin-top:10px"><table><thead><tr><th>#</th><th>Offset</th><th>Value</th></tr></thead><tbody id="numRows"></tbody></table></div>
+</section>
+
+<section class="panel wide">
+  <h3>Fixed-record hypotheses</h3>
+  <p class="small">These are heuristic candidates, not assertions. Higher scores mean the sampled bytes fit the pattern better.</p>
+  <div id="records"></div>
+</section>
+
+<section class="panel wide">
+  <h3>Byte distribution</h3>
+  <canvas id="bytehist" width="1200" height="280"></canvas>
+</section>
+</main>
+
+<script>
+let file=null, sampleBytes=null, detectedHeader=0;
+const $=id=>document.getElementById(id);
+
+$("file").addEventListener("change", async()=>{
+  file=$("file").files[0]||null; if(!file)return;
+  $("status").textContent="Analyzing locally…";
+  ["hexRead","stringsBtn","decodeBtn"].forEach(id=>$(id).disabled=false);
+  $("hexOffset").max=file.size;$("numOffset").max=file.size;
+  await analyze();
+  await readHex();
+  $("status").textContent="Ready";
+});
+$("hexRead").onclick=readHex;$("stringsBtn").onclick=extractStrings;$("decodeBtn").onclick=decodeNumbers;
+
+async function analyze(){
+  const maxSample=Math.min(file.size,8*1024*1024);
+  sampleBytes=new Uint8Array(await file.slice(0,maxSample).arrayBuffer());
+  const sig=detectSignature(sampleBytes);
+  const textStats=getTextStats(sampleBytes);
+  const ent=entropy(sampleBytes);
+  const header=detectTextHeader(sampleBytes);
+  detectedHeader=header.offset||0;
+  const recordCandidates=detectRecordCandidates(sampleBytes,file.size,detectedHeader);
+  const likely=buildLikely(sig,textStats,ent,header,recordCandidates);
+
+  $("meta").innerHTML=[
+    kv("File",file.name),kv("Size",formatBytes(file.size)),
+    kv("Signature",sig.name||"unknown"),kv("Entropy",ent.toFixed(3)+" bits/byte"),
+    kv("Printable bytes",(100*textStats.printableRatio).toFixed(1)+"%"),
+    kv("NUL bytes",(100*textStats.zeroRatio).toFixed(1)+"%"),
+    kv("Probable header",detectedHeader?detectedHeader+" bytes":"none"),
+    kv("Sample analyzed",formatBytes(maxSample))
+  ].join("");
+
+  $("detected").innerHTML=likely.map(x=>`<span class="badge">${esc(x)}</span>`).join(" ");
+  $("report").textContent=makeReport(sig,textStats,ent,header,recordCandidates);
+  $("records").innerHTML=renderRecordCandidates(recordCandidates);
+  drawByteHistogram(sampleBytes);
+}
+function kv(k,v){return `<div class="kv"><b>${esc(k)}</b><span>${esc(String(v))}</span></div>`}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+function formatBytes(n){const u=["B","KB","MB","GB","TB"];let i=0,x=n;while(x>=1024&&i<u.length-1){x/=1024;i++}return `${x.toFixed(i?2:0)} ${u[i]}`}
+
+function starts(b,a){if(b.length<a.length)return false;for(let i=0;i<a.length;i++)if(b[i]!==a[i])return false;return true}
+function asciiAt(b,s,off=0){for(let i=0;i<s.length;i++)if(b[off+i]!==s.charCodeAt(i))return false;return true}
+function detectSignature(b){
+  const tests=[
+    ["PNG",[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]],
+    ["JPEG",[0xff,0xd8,0xff]],["PDF",[0x25,0x50,0x44,0x46,0x2d]],
+    ["ZIP / Office / JAR",[0x50,0x4b,0x03,0x04]],["GZIP",[0x1f,0x8b]],
+    ["ELF executable",[0x7f,0x45,0x4c,0x46]],["SQLite",[0x53,0x51,0x4c,0x69,0x74,0x65,0x20,0x66,0x6f,0x72,0x6d,0x61,0x74,0x20,0x33,0x00]],
+    ["HDF5",[0x89,0x48,0x44,0x46,0x0d,0x0a,0x1a,0x0a]],["RAR",[0x52,0x61,0x72,0x21,0x1a,0x07]],
+    ["7-Zip",[0x37,0x7a,0xbc,0xaf,0x27,0x1c]]
+  ];
+  for(const [name,a] of tests)if(starts(b,a))return {name,confidence:"high"};
+  if(b.length>=12 && asciiAt(b,"RIFF",0) && asciiAt(b,"WAVE",8))return {name:"WAV / RIFF",confidence:"high"};
+  if(b.length>=4 && (asciiAt(b,"II*\0",0)||asciiAt(b,"MM\0*",0)))return {name:"TIFF",confidence:"high"};
+  if(b.length>=2 && asciiAt(b,"MZ",0))return {name:"PE/Windows executable",confidence:"high"};
+  if(b.length>=9 && asciiAt(b,"SIMPLE  =",0))return {name:"FITS",confidence:"high"};
+  if(b.length>=18 && asciiAt(b,"DGX16 LIST-MODE",0))return {name:"DGX16 list-mode",confidence:"high"};
+  return {name:"",confidence:"low"};
+}
+function getTextStats(b){
+  let p=0,z=0,nl=0;
+  for(const x of b){if(x===0)z++; if(x===10||x===13)nl++; if((x>=32&&x<=126)||x===9||x===10||x===13)p++}
+  return {printableRatio:p/b.length,zeroRatio:z/b.length,newlines:nl};
+}
+function entropy(b){
+  if(!b.length)return 0;const c=new Uint32Array(256);for(const x of b)c[x]++;
+  let h=0;for(const n of c)if(n){const p=n/b.length;h-=p*Math.log2(p)}return h;
+}
+function detectTextHeader(b){
+  const limit=Math.min(b.length,65536);
+  let nulRun=0,runStart=-1;
+  for(let i=0;i<limit;i++){
+    if(b[i]===0){if(nulRun===0)runStart=i;nulRun++;if(nulRun>=16){
+      const prior=b.slice(0,runStart), st=getTextStats(prior);
+      if(prior.length>=16 && st.printableRatio>0.85){
+        const aligned=[64,128,256,512,1024,2048,4096,8192,16384].find(x=>x>=runStart && x<=limit && allZero(b,runStart,x));
+        return {offset:aligned||runStart,text:new TextDecoder("ascii").decode(prior).trim(),confidence:st.printableRatio};
+      }
+    }}else{nulRun=0;runStart=-1}
+  }
+  return {offset:0,text:"",confidence:0};
+}
+function allZero(b,a,z){for(let i=a;i<Math.min(z,b.length);i++)if(b[i]!==0)return false;return true}
+function buildLikely(sig,t,e,h,rc){
+  let a=[];if(sig.name)a.push(sig.name);
+  if(t.printableRatio>0.92)a.push("mostly text");
+  else if(e>7.6)a.push("compressed/encrypted-like");
+  else a.push("binary data");
+  if(h.offset)a.push("text header + binary payload");
+  if(rc.length)a.push(`fixed records likely (${rc[0].width} B candidate)`);
+  return a;
+}
+function detectRecordCandidates(b,fileSize,header){
+  const widths=[4,6,8,10,12,14,16,20,24,28,32,36,40,48,56,64,80,96,128,256];
+  const offsets=[...new Set([header,0,64,128,256,512,1024,2048,4096].filter(x=>x<fileSize))];
+  let out=[];
+  for(const off of offsets){
+    const payload=fileSize-off;
+    for(const w of widths){
+      if(payload<w*4)continue;
+      let score=0, reasons=[];
+      if(payload%w===0){score+=35;reasons.push("file size divides exactly");}
+      const avail=Math.min(Math.floor((b.length-off)/w),5000);
+      if(avail<8)continue;
+      const view=b;
+      // low-cardinality trailing byte often identifies flags/channel fields
+      for(const pos of [w-1,w-2]){
+        if(pos<0)continue;const set=new Set();
+        for(let r=0;r<Math.min(avail,2000);r++)set.add(view[off+r*w+pos]);
+        if(set.size<=8){score+=10;reasons.push(`byte ${pos} has only ${set.size} values`);}
+        else if(set.size<=32){score+=4;}
+      }
+      // monotonic uint64 at record start, both endian options
+      if(w>=8){
+        const monoLE=monotonic64(view,off,w,avail,true), monoBE=monotonic64(view,off,w,avail,false);
+        const best=Math.max(monoLE,monoBE);
+        if(best>0.995){score+=35;reasons.push(`first uint64 is ${(best===monoLE?"LE":"BE")} monotonic`);}
+        else if(best>0.95){score+=20;reasons.push("first uint64 is mostly monotonic");}
+      }
+      // bounded uint16 at bytes 8..9 if available
+      if(w>=10){
+        const dv=new DataView(view.buffer,view.byteOffset,view.byteLength);let mx=0,ok=0;
+        for(let r=0;r<Math.min(avail,2000);r++){const p=off+r*w+8;if(p+1>=view.length)break;const v=dv.getUint16(p,true);mx=Math.max(mx,v);if(v<=16383)ok++;}
+        if(ok/Math.min(avail,2000)>0.98){score+=10;reasons.push("16-bit field at +8 is mostly ≤16383");}
+      }
+      if(score>=35)out.push({offset:off,width:w,score:Math.min(score,100),reasons,count:Math.floor(payload/w)});
+    }
+  }
+  out.sort((a,b)=>b.score-a.score || a.offset-b.offset || a.width-b.width);
+  // de-duplicate same width/offset-ish hypotheses
+  return out.slice(0,8);
+}
+function monotonic64(b,off,w,avail,little){
+  if(avail<3)return 0;const dv=new DataView(b.buffer,b.byteOffset,b.byteLength);let prev=null,good=0,total=0;
+  for(let r=0;r<Math.min(avail,2000);r++){
+    const p=off+r*w;if(p+7>=b.length)break;
+    let v;if(little){const lo=BigInt(dv.getUint32(p,true)),hi=BigInt(dv.getUint32(p+4,true));v=(hi<<32n)|lo}
+    else{const hi=BigInt(dv.getUint32(p,false)),lo=BigInt(dv.getUint32(p+4,false));v=(hi<<32n)|lo}
+    if(prev!==null){total++;if(v>=prev)good++;}prev=v;
+  }
+  return total?good/total:0;
+}
+function renderRecordCandidates(rc){
+  if(!rc.length)return '<div class="card">No strong fixed-record hypothesis found in the sample.</div>';
+  return rc.map((r,i)=>`<div class="card"><span class="score">#${i+1} · ${r.score}/100</span> &nbsp; offset <b>${r.offset}</b>, record width <b>${r.width} bytes</b>, estimated records <b>${r.count.toLocaleString()}</b><br><span class="small">${esc(r.reasons.join("; "))}</span></div>`).join("");
+}
+function makeReport(sig,t,e,h,rc){
+  let lines=[];
+  if(sig.name)lines.push(`Known signature: ${sig.name} (${sig.confidence} confidence)`);
+  else lines.push("Known signature: none recognized");
+  lines.push(`Shannon entropy: ${e.toFixed(3)} bits/byte`);
+  lines.push(`Printable-byte fraction: ${(100*t.printableRatio).toFixed(2)}%`);
+  lines.push(`NUL-byte fraction: ${(100*t.zeroRatio).toFixed(2)}%`);
+  if(h.offset){lines.push(`Probable text header ends at byte ${h.offset}`);if(h.text)lines.push("\nHeader preview:\n"+h.text.slice(0,2000));}
+  if(rc.length){lines.push("\nTop fixed-record candidates:");for(const r of rc.slice(0,5))lines.push(`  score ${r.score}: offset=${r.offset}, width=${r.width}, records≈${r.count}`);}
+  if(sig.name==="DGX16 list-mode" && rc.some(r=>r.offset===512&&r.width===12)){
+    lines.push("\nDGX16-specific interpretation:");
+    lines.push("  512-byte ASCII/NUL-padded header");
+    lines.push("  12-byte records");
+    lines.push("  likely <uint64 LE timestamp, uint16 LE value, uint8 channel, uint8 flags>");
+  }
+  lines.push("\nImportant: heuristic detections are ranked hypotheses. Proprietary formats may require documentation.");
+  return lines.join("\n");
+}
+async function readHex(){
+  if(!file)return;const off=Math.max(0,+$("hexOffset").value||0),len=Math.max(16,Math.min(65536,+$("hexLength").value||2048));
+  const b=new Uint8Array(await file.slice(off,off+len).arrayBuffer());let out=[];
+  for(let i=0;i<b.length;i+=16){const row=b.slice(i,i+16),a=(off+i).toString(16).padStart(8,"0"),hx=Array.from(row,x=>x.toString(16).padStart(2,"0")).join(" ").padEnd(47," "),as=Array.from(row,x=>(x>=32&&x<=126)?String.fromCharCode(x):".").join("");out.push(`${a}  ${hx} |${as}|`)}
+  $("hex").textContent=out.join("\n");
+}
+async function extractStrings(){
+  if(!file)return;const max=Math.min(file.size,64*1024*1024),min=Math.max(2,+$("minString").value||4),b=new Uint8Array(await file.slice(0,max).arrayBuffer());let found=[],s=-1;
+  for(let i=0;i<=b.length;i++){const p=i<b.length&&b[i]>=32&&b[i]<=126;if(p&&s<0)s=i;if(!p&&s>=0){if(i-s>=min){found.push(`0x${s.toString(16).padStart(8,"0")}  `+new TextDecoder("ascii").decode(b.slice(s,i)));if(found.length>=5000){found.push("…truncated…");break}}s=-1}}
+  $("strings").textContent=found.length?found.join("\n"):"No printable strings found in scanned region.";
+}
+const info={u8:[1,"getUint8"],i8:[1,"getInt8"],u16:[2,"getUint16"],i16:[2,"getInt16"],u32:[4,"getUint32"],i32:[4,"getInt32"],u64:[8,"getBigUint64"],i64:[8,"getBigInt64"],f32:[4,"getFloat32"],f64:[8,"getFloat64"]};
+async function decodeNumbers(){
+  if(!file)return;const off=Math.max(0,+$("numOffset").value||0),kind=$("dtype").value,[w,m]=info[kind],n=Math.max(1,Math.min(10000,+$("numCount").value||128)),little=$("endian").value==="little";
+  const buf=await file.slice(off,off+w*n).arrayBuffer(),dv=new DataView(buf),count=Math.floor(buf.byteLength/w);let html="";
+  for(let i=0;i<count;i++){let v=w===1?dv[m](i*w):dv[m](i*w,little);html+=`<tr><td>${i}</td><td>${off+i*w}</td><td>${esc(String(v))}</td></tr>`}
+  $("numRows").innerHTML=html;
+}
+function drawByteHistogram(b){
+  const c=$("bytehist"),ctx=c.getContext("2d"),counts=new Uint32Array(256);for(const x of b)counts[x]++;
+  const max=Math.max(...counts),W=c.width,H=c.height,L=45,R=10,T=12,B=28,pw=W-L-R,ph=H-T-B;
+  ctx.clearRect(0,0,W,H);ctx.strokeStyle="#71819a";ctx.beginPath();ctx.moveTo(L,T);ctx.lineTo(L,H-B);ctx.lineTo(W-R,H-B);ctx.stroke();
+  ctx.fillStyle="#69a8ff";const bw=pw/256;for(let i=0;i<256;i++){const h=max?counts[i]/max*ph:0;ctx.fillRect(L+i*bw,H-B-h,Math.max(1,bw-0.5),h)}
+  ctx.fillStyle="#aab9cf";ctx.font="12px system-ui";ctx.fillText("0",L,H-8);ctx.fillText("255",W-32,H-8);ctx.fillText(`max count ${max.toLocaleString()}`,L+10,T+12);
+}
+</script>
+</body>
+</html>
