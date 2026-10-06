@@ -100,6 +100,7 @@ $("file").addEventListener("change", async()=>{
   $("status").textContent="Analyzing locally…";
   ["hexRead","stringsBtn","decodeBtn"].forEach(id=>$(id).disabled=false);
   $("hexOffset").max=file.size;$("numOffset").max=file.size;
+  $("strings").textContent="Click Extract to scan for printable strings.";
   await analyze();
   await readHex();
   $("status").textContent="Ready";
@@ -112,10 +113,17 @@ async function analyze(){
   const sig=detectSignature(sampleBytes);
   const textStats=getTextStats(sampleBytes);
   const ent=entropy(sampleBytes);
-  const header=detectTextHeader(sampleBytes);
+  const genericHeader=detectTextHeader(sampleBytes);
+  const declared=inferDeclaredLayout(sampleBytes,file.size);
+  const header={...genericHeader};
+  if(declared){
+    header.offset=declared.headerBytes;
+    header.text=new TextDecoder("ascii").decode(sampleBytes.slice(0,Math.min(declared.headerBytes,sampleBytes.length))).replace(/\0+$/g,"").trim();
+  }
   detectedHeader=header.offset||0;
-  const recordCandidates=detectRecordCandidates(sampleBytes,file.size,detectedHeader);
-  const likely=buildLikely(sig,textStats,ent,header,recordCandidates);
+  let recordCandidates=detectRecordCandidates(sampleBytes,file.size,detectedHeader);
+  recordCandidates=promoteDeclaredCandidate(recordCandidates,declared);
+  const likely=buildLikely(sig,textStats,ent,header,recordCandidates,declared);
 
   $("meta").innerHTML=[
     kv("File",file.name),kv("Size",formatBytes(file.size)),
@@ -127,7 +135,7 @@ async function analyze(){
   ].join("");
 
   $("detected").innerHTML=likely.map(x=>`<span class="badge">${esc(x)}</span>`).join(" ");
-  $("report").textContent=makeReport(sig,textStats,ent,header,recordCandidates);
+  $("report").textContent=makeReport(sig,textStats,ent,header,recordCandidates,declared);
   $("records").innerHTML=renderRecordCandidates(recordCandidates);
   drawByteHistogram(sampleBytes);
 }
@@ -178,13 +186,33 @@ function detectTextHeader(b){
   return {offset:0,text:"",confidence:0};
 }
 function allZero(b,a,z){for(let i=a;i<Math.min(z,b.length);i++)if(b[i]!==0)return false;return true}
-function buildLikely(sig,t,e,h,rc){
+function inferDeclaredLayout(b,fileSize){
+  const n=Math.min(b.length,16384);
+  const text=new TextDecoder("ascii").decode(b.slice(0,n));
+  const rb=text.match(/(?:^|\n)record_bytes\s*=\s*(\d+)/m);
+  const rr=text.match(/(?:^|\n)records\s*=\s*(\d+)/m);
+  if(!rb||!rr)return null;
+  const recordBytes=Number(rb[1]),records=Number(rr[1]);
+  if(!Number.isSafeInteger(recordBytes)||!Number.isSafeInteger(records)||recordBytes<=0||records<=0)return null;
+  const headerBytes=fileSize-recordBytes*records;
+  if(!Number.isSafeInteger(headerBytes)||headerBytes<0||headerBytes>16*1024*1024)return null;
+  return {recordBytes,records,headerBytes};
+}
+function promoteDeclaredCandidate(rc,d){
+  if(!d)return rc;
+  let hit=rc.find(r=>r.offset===d.headerBytes&&r.width===d.recordBytes);
+  if(!hit)hit={offset:d.headerBytes,width:d.recordBytes,score:100,reasons:[],count:d.records};
+  hit={...hit,score:100,count:d.records,reasons:["matches declared record_bytes and records",...(hit.reasons||[]).filter(x=>x!=="matches declared record_bytes and records")]};
+  return [hit,...rc.filter(r=>!(r.offset===d.headerBytes&&r.width===d.recordBytes))];
+}
+function buildLikely(sig,t,e,h,rc,d){
   let a=[];if(sig.name)a.push(sig.name);
   if(t.printableRatio>0.92)a.push("mostly text");
   else if(e>7.6)a.push("compressed/encrypted-like");
   else a.push("binary data");
   if(h.offset)a.push("text header + binary payload");
-  if(rc.length)a.push(`fixed records likely (${rc[0].width} B candidate)`);
+  if(d)a.push(`declared fixed records (${d.recordBytes} B)`);
+  else if(rc.length)a.push(`fixed records likely (${rc[0].width} B candidate)`);
   return a;
 }
 function detectRecordCandidates(b,fileSize,header){
@@ -241,16 +269,22 @@ function renderRecordCandidates(rc){
   if(!rc.length)return '<div class="card">No strong fixed-record hypothesis found in the sample.</div>';
   return rc.map((r,i)=>`<div class="card"><span class="score">#${i+1} · ${r.score}/100</span> &nbsp; offset <b>${r.offset}</b>, record width <b>${r.width} bytes</b>, estimated records <b>${r.count.toLocaleString()}</b><br><span class="small">${esc(r.reasons.join("; "))}</span></div>`).join("");
 }
-function makeReport(sig,t,e,h,rc){
+function makeReport(sig,t,e,h,rc,d){
   let lines=[];
   if(sig.name)lines.push(`Known signature: ${sig.name} (${sig.confidence} confidence)`);
   else lines.push("Known signature: none recognized");
   lines.push(`Shannon entropy: ${e.toFixed(3)} bits/byte`);
   lines.push(`Printable-byte fraction: ${(100*t.printableRatio).toFixed(2)}%`);
   lines.push(`NUL-byte fraction: ${(100*t.zeroRatio).toFixed(2)}%`);
-  if(h.offset){lines.push(`Probable text header ends at byte ${h.offset}`);if(h.text)lines.push("\nHeader preview:\n"+h.text.slice(0,2000));}
+  if(h.offset){lines.push(`${d?"Validated":"Probable"} text header ends at byte ${h.offset}`);if(h.text)lines.push("\nHeader preview:\n"+h.text.slice(0,2000));}
+  if(d){
+    lines.push("\nDeclared layout cross-check:");
+    lines.push(`  record_bytes=${d.recordBytes}, records=${d.records}`);
+    lines.push(`  file_size - record_bytes × records = ${d.headerBytes} header bytes`);
+    lines.push("  exact file-size accounting: yes");
+  }
   if(rc.length){lines.push("\nTop fixed-record candidates:");for(const r of rc.slice(0,5))lines.push(`  score ${r.score}: offset=${r.offset}, width=${r.width}, records≈${r.count}`);}
-  if(sig.name==="DGX16 list-mode" && rc.some(r=>r.offset===512&&r.width===12)){
+  if(sig.name==="DGX16 list-mode" && ((d&&d.headerBytes===512&&d.recordBytes===12)||rc.some(r=>r.offset===512&&r.width===12))){
     lines.push("\nDGX16-specific interpretation:");
     lines.push("  512-byte ASCII/NUL-padded header");
     lines.push("  12-byte records");
